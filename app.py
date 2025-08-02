@@ -28,7 +28,7 @@ html, body, .main {
     font-size: 36px;
     font-weight: bold;
     margin-top: 20px;
-    color: #2c3e50;
+    color: white;
 }
 .subheading {
     text-align: center;
@@ -267,4 +267,5 @@ if show_gemini_chat:
 
 # === Footer ===
 st.markdown("<div class='footer'>✨ Developed with ❤️ for Students | Powered by Streamlit</div>", unsafe_allow_html=True)
+
 
