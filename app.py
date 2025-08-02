@@ -1,5 +1,6 @@
 import streamlit as st
 import requests
+import time
 
 # === Configuration ===
 BACKEND_URL = "https://study-mate-29i6.onrender.com"
@@ -96,19 +97,20 @@ footer { visibility: hidden; }
 
 # === Authentication Functions ===
 def login_user(username, password):
-    res = requests.post(f"{BACKEND_URL}/login", json={"username": username, "password": password})
-    if res.status_code == 200:
-        # Load user history
-        h = requests.get(f"{BACKEND_URL}/history/{username}")
-        if h.status_code == 200:
-            history = h.json()
-            st.session_state.qa_history = [(q["question"], q["answer"], q.get("matched_paragraphs", [])) for q in history]
-        return True, None
-    return False, res.json().get("error")
+    with st.spinner("🔐 Logging in..."):
+        res = requests.post(f"{BACKEND_URL}/login", json={"username": username, "password": password})
+        if res.status_code == 200:
+            h = requests.get(f"{BACKEND_URL}/history/{username}")
+            if h.status_code == 200:
+                history = h.json()
+                st.session_state.qa_history = [(q["question"], q["answer"], q.get("matched_paragraphs", [])) for q in history]
+            return True, None
+        return False, res.json().get("error")
 
 def signup_user(username, password):
-    res = requests.post(f"{BACKEND_URL}/signup", json={"username": username, "password": password})
-    return res.status_code == 200, res.json().get("error")
+    with st.spinner("📝 Creating account..."):
+        res = requests.post(f"{BACKEND_URL}/signup", json={"username": username, "password": password})
+        return res.status_code == 200, res.json().get("error")
 
 # === Login / Signup ===
 if not st.session_state.logged_in:
@@ -136,7 +138,7 @@ if not st.session_state.logged_in:
                 st.error(err or "Authentication failed.")
     st.stop()
 
-# === Sidebar: Profile + Chat History ===
+# === Sidebar ===
 with st.sidebar:
     st.markdown(f"<h4>👤 {st.session_state.username}</h4>", unsafe_allow_html=True)
 
@@ -156,26 +158,12 @@ with st.sidebar:
     if has_any_history:
         combined_history = []
 
-        # Add Gemini chats with identifier
         for idx, g in enumerate(reversed(st.session_state.get("gemini_history", []))):
-            combined_history.append({
-                "type": "gemini",
-                "question": g["question"],
-                "answer": g["answer"],
-                "index": idx
-            })
+            combined_history.append({"type": "gemini", "question": g["question"], "answer": g["answer"], "index": idx})
 
-        # Add PDF Q&A chats
         for idx, (q, a, refs) in enumerate(reversed(st.session_state.qa_history)):
-            combined_history.append({
-                "type": "pdf",
-                "question": q,
-                "answer": a,
-                "refs": refs,
-                "index": idx
-            })
+            combined_history.append({"type": "pdf", "question": q, "answer": a, "refs": refs, "index": idx})
 
-        # Display merged history
         for i, item in enumerate(combined_history):
             label = f"🧠 {item['question']}" if item["type"] == "gemini" else f"📄 {item['question']}"
             if st.button(label, key=f"hist_btn_{i}"):
@@ -184,10 +172,8 @@ with st.sidebar:
                 else:
                     st.session_state.selected_response = (item["question"], item["answer"], item["refs"])
                 st.rerun()
-
     else:
         st.info("No chats yet. Start by asking a question.")
-
 
 # === Header ===
 st.markdown("<div class='header-title'>🎓 StudyMate: Smart Study Assistant</div>", unsafe_allow_html=True)
@@ -198,17 +184,17 @@ st.markdown("### 📂 Upload PDF files")
 uploaded_files = st.file_uploader("Drag and drop files here", type=["pdf"], accept_multiple_files=True)
 
 if uploaded_files:
-    try:
-        st.toast("📤 Uploading PDFs...")
-        pdf_payload = [("files", (f.name, f, "application/pdf")) for f in uploaded_files]
-        data = {"username": st.session_state.username}
-        upload_resp = requests.post(f"{BACKEND_URL}/upload", files=pdf_payload, data=data)
-        if upload_resp.status_code == 200:
-            st.success("✅ PDFs uploaded successfully!")
-        else:
-            st.error("❌ Upload failed.")
-    except Exception as e:
-        st.error(f"🔌 Upload error: {e}")
+    with st.spinner("📤 Uploading PDFs..."):
+        try:
+            pdf_payload = [("files", (f.name, f, "application/pdf")) for f in uploaded_files]
+            data = {"username": st.session_state.username}
+            upload_resp = requests.post(f"{BACKEND_URL}/upload", files=pdf_payload, data=data)
+            if upload_resp.status_code == 200:
+                st.success("✅ PDFs uploaded successfully!")
+            else:
+                st.error("❌ Upload failed.")
+        except Exception as e:
+            st.error(f"🔌 Upload error: {e}")
 
 # === Ask a Question ===
 st.markdown("### 💬 Ask a Question")
@@ -217,22 +203,22 @@ with st.form("chat_form", clear_on_submit=True):
     submit = st.form_submit_button("Ask")
 
     if submit and question.strip():
-        st.toast("🤖 Thinking...")
-        try:
-            r = requests.post(f"{BACKEND_URL}/ask", json={"question": question, "username": st.session_state.username})
-            if r.status_code == 200:
-                result = r.json()
-                answer = result.get("answer", "No answer found.")
-                refs = result.get("matched_paragraphs", [])
-                st.session_state.qa_history.append((question, answer, refs))
-                st.session_state.selected_response = (question, answer, refs)
-                st.rerun()
-            elif r.status_code == 404:
-                st.warning("📭 No answer found. Upload PDFs first.")
-            else:
-                st.error("❌ Backend error.")
-        except Exception as e:
-            st.error(f"Request failed: {e}")
+        with st.spinner("🤖 Thinking..."):
+            try:
+                r = requests.post(f"{BACKEND_URL}/ask", json={"question": question, "username": st.session_state.username})
+                if r.status_code == 200:
+                    result = r.json()
+                    answer = result.get("answer", "No answer found.")
+                    refs = result.get("matched_paragraphs", [])
+                    st.session_state.qa_history.append((question, answer, refs))
+                    st.session_state.selected_response = (question, answer, refs)
+                    st.rerun()
+                elif r.status_code == 404:
+                    st.warning("📭 No answer found. Upload PDFs first.")
+                else:
+                    st.error("❌ Backend error.")
+            except Exception as e:
+                st.error(f"Request failed: {e}")
 
 # === Display Selected Chat ===
 if st.session_state.selected_response:
@@ -244,6 +230,7 @@ if st.session_state.selected_response:
     if a and refs and all(p not in a.lower() for p in fallback_phrases):
         for ref in refs:
             st.markdown(f"<div class='reference'>• {ref}</div>", unsafe_allow_html=True)
+
 # === Gemini Chatbot Interface ===
 st.markdown("<hr>", unsafe_allow_html=True)
 show_gemini_chat = st.toggle("💬 Ask Chatbot Instead", key="gemini_toggle")
@@ -258,31 +245,23 @@ if show_gemini_chat:
         submit_gemini = st.form_submit_button("Send")
 
     if submit_gemini and user_input.strip():
-        st.toast("🧠 Gemini is thinking...")
+        with st.spinner("🧠 Gemini is thinking..."):
+            try:
+                gemini_res = requests.post(
+                    f"{BACKEND_URL}/gemini_chat",
+                    json={"message": user_input, "username": st.session_state.username}
+                )
+                if gemini_res.status_code == 200:
+                    reply = gemini_res.json().get("response", "No response.")
+                    st.session_state.gemini_history.append((user_input, reply))
+                else:
+                    st.session_state.gemini_history.append((user_input, "Error from Gemini API."))
+            except Exception as e:
+                st.session_state.gemini_history.append((user_input, f"Error: {e}"))
 
-        try:
-            gemini_res = requests.post(
-                f"{BACKEND_URL}/gemini_chat",
-                json={
-                "message": user_input,
-                "username": st.session_state.username  # ✅ Include the username
-                }
-            )
-
-
-            if gemini_res.status_code == 200:
-                reply = gemini_res.json().get("response", "No response.")
-                st.session_state.gemini_history.append((user_input, reply))
-            else:
-                st.session_state.gemini_history.append((user_input, "Error from Gemini API."))
-        except Exception as e:
-            st.session_state.gemini_history.append((user_input, f"Error: {e}"))
-
-    # Display chat history
     for u, r in reversed(st.session_state.gemini_history):
         st.markdown(f"<div class='chat-bubble user-bubble'><b>You:</b> {u}</div>", unsafe_allow_html=True)
         st.markdown(f"<div class='chat-bubble bot-bubble'><b>Gemini:</b> {r}</div>", unsafe_allow_html=True)
-
 
 # === Footer ===
 st.markdown("<div class='footer'>✨ Developed with ❤️ for Students | Powered by Streamlit</div>", unsafe_allow_html=True)
