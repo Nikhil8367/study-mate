@@ -3,7 +3,7 @@ import requests
 import time
 
 # === Configuration ===
-BACKEND_URL = "https://study-mate-29i6.onrender.com"
+BACKEND_URL = "http://localhost:5000"
 st.set_page_config(page_title="StudyMate", layout="wide", initial_sidebar_state="collapsed")
 
 # === Session State Initialization ===
@@ -159,7 +159,9 @@ with st.sidebar:
         combined_history = []
 
         for idx, g in enumerate(reversed(st.session_state.get("gemini_history", []))):
-            combined_history.append({"type": "gemini", "question": g["question"], "answer": g["answer"], "index": idx})
+            question, answer = g  # unpack tuple
+            combined_history.append({"type": "gemini", "question": question, "answer": answer, "index": idx})
+
 
         for idx, (q, a, refs) in enumerate(reversed(st.session_state.qa_history)):
             combined_history.append({"type": "pdf", "question": q, "answer": a, "refs": refs, "index": idx})
