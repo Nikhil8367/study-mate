@@ -15,6 +15,8 @@ if "qa_history" not in st.session_state:
     st.session_state.qa_history = []
 if "selected_response" not in st.session_state:
     st.session_state.selected_response = None
+if "gemini_history" not in st.session_state:
+    st.session_state.gemini_history = []
 
 # === Styling ===
 st.markdown("""
@@ -159,20 +161,28 @@ with st.sidebar:
         combined_history = []
 
         for idx, g in enumerate(reversed(st.session_state.get("gemini_history", []))):
-            question, answer = g  # unpack tuple
+            question, answer = g
             combined_history.append({"type": "gemini", "question": question, "answer": answer, "index": idx})
-
 
         for idx, (q, a, refs) in enumerate(reversed(st.session_state.qa_history)):
             combined_history.append({"type": "pdf", "question": q, "answer": a, "refs": refs, "index": idx})
 
         for i, item in enumerate(combined_history):
+            cols = st.columns([8, 1])  # history + delete
             label = f"🧠 {item['question']}" if item["type"] == "gemini" else f"📄 {item['question']}"
-            if st.button(label, key=f"hist_btn_{i}"):
+
+            if cols[0].button(label, key=f"hist_btn_{i}"):
                 if item["type"] == "gemini":
                     st.session_state.selected_response = (item["question"], item["answer"], None)
                 else:
                     st.session_state.selected_response = (item["question"], item["answer"], item["refs"])
+                st.rerun()
+
+            if cols[1].button("🗑️", key=f"del_btn_{i}"):
+                if item["type"] == "gemini":
+                    del st.session_state.gemini_history[-(item["index"]+1)]
+                else:
+                    del st.session_state.qa_history[-(item["index"]+1)]
                 st.rerun()
     else:
         st.info("No chats yet. Start by asking a question.")
@@ -239,8 +249,6 @@ show_gemini_chat = st.toggle("💬 Ask Chatbot Instead", key="gemini_toggle")
 
 if show_gemini_chat:
     st.markdown("### 🤖 Gemini Chat Assistant")
-    if "gemini_history" not in st.session_state:
-        st.session_state.gemini_history = []
 
     with st.form("gemini_chat", clear_on_submit=True):
         user_input = st.text_input("Ask anything...", placeholder="What's the capital of France?")
@@ -267,6 +275,3 @@ if show_gemini_chat:
 
 # === Footer ===
 st.markdown("<div class='footer'>✨ Developed with ❤️ for Students | Powered by Streamlit</div>", unsafe_allow_html=True)
-
-
-
