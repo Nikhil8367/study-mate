@@ -1,6 +1,5 @@
 import streamlit as st
 import requests
-import time
 
 # === Configuration ===
 BACKEND_URL = "https://study-mate-back.onrender.com"
@@ -180,9 +179,22 @@ with st.sidebar:
 
             if cols[1].button("🗑️", key=f"del_btn_{i}"):
                 if item["type"] == "gemini":
+                    # Gemini is only frontend, delete locally
                     del st.session_state.gemini_history[-(item["index"]+1)]
                 else:
-                    del st.session_state.qa_history[-(item["index"]+1)]
+                    # Convert reversed index back to original
+                    actual_index = len(st.session_state.qa_history) - 1 - item["index"]
+                    try:
+                        resp = requests.delete(
+                            f"{BACKEND_URL}/history/{st.session_state.username}/{actual_index}"
+                        )
+                        if resp.status_code == 200:
+                            st.success("Deleted from DB ✅")
+                            st.session_state.qa_history.pop(actual_index)
+                        else:
+                            st.error("❌ Failed to delete from DB")
+                    except Exception as e:
+                        st.error(f"Backend error: {e}")
                 st.rerun()
     else:
         st.info("No chats yet. Start by asking a question.")
@@ -203,6 +215,11 @@ if uploaded_files:
             upload_resp = requests.post(f"{BACKEND_URL}/upload", files=pdf_payload, data=data)
             if upload_resp.status_code == 200:
                 st.success("✅ PDFs uploaded successfully!")
+                # 🔄 Refresh history immediately
+                h = requests.get(f"{BACKEND_URL}/history/{st.session_state.username}")
+                if h.status_code == 200:
+                    st.session_state.qa_history = [(q["question"], q["answer"], q.get("matched_paragraphs", [])) for q in h.json()]
+                st.rerun()
             else:
                 st.error("❌ Upload failed.")
         except Exception as e:
