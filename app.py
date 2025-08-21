@@ -3,7 +3,7 @@ import requests
 import time
 
 # === Configuration ===
-BACKEND_URL = "https://study-mate-29i6.onrender.com"
+BACKEND_URL = "https://study-mate-back.onrender.com"
 st.set_page_config(page_title="StudyMate", layout="wide", initial_sidebar_state="collapsed")
 
 # === Session State Initialization ===
@@ -267,5 +267,6 @@ if show_gemini_chat:
 
 # === Footer ===
 st.markdown("<div class='footer'>✨ Developed with ❤️ for Students | Powered by Streamlit</div>", unsafe_allow_html=True)
+
 
 
