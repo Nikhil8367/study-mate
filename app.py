@@ -104,7 +104,10 @@ def login_user(username, password):
             h = requests.get(f"{BACKEND_URL}/history/{username}")
             if h.status_code == 200:
                 history = h.json()
-                st.session_state.qa_history = [(q["question"], q["answer"], q.get("matched_paragraphs", [])) for q in history]
+                st.session_state.qa_history = [
+                    (q["_id"], q["question"], q["answer"], q.get("matched_paragraphs", []))
+                    for q in history
+                ]
             return True, None
         return False, res.json().get("error")
 
@@ -163,11 +166,18 @@ with st.sidebar:
             question, answer = g
             combined_history.append({"type": "gemini", "question": question, "answer": answer, "index": idx})
 
-        for idx, (q, a, refs) in enumerate(reversed(st.session_state.qa_history)):
-            combined_history.append({"type": "pdf", "question": q, "answer": a, "refs": refs, "index": idx})
+        for idx, (chat_id, q, a, refs) in enumerate(reversed(st.session_state.qa_history)):
+            combined_history.append({
+                "type": "pdf",
+                "id": chat_id,
+                "question": q,
+                "answer": a,
+                "refs": refs,
+                "index": idx
+            })
 
         for i, item in enumerate(combined_history):
-            cols = st.columns([8, 1])  # history + delete
+            cols = st.columns([8, 1])
             label = f"🧠 {item['question']}" if item["type"] == "gemini" else f"📄 {item['question']}"
 
             if cols[0].button(label, key=f"hist_btn_{i}"):
@@ -179,18 +189,17 @@ with st.sidebar:
 
             if cols[1].button("🗑️", key=f"del_btn_{i}"):
                 if item["type"] == "gemini":
-                    # Gemini is only frontend, delete locally
                     del st.session_state.gemini_history[-(item["index"]+1)]
                 else:
-                    # Convert reversed index back to original
-                    actual_index = len(st.session_state.qa_history) - 1 - item["index"]
                     try:
                         resp = requests.delete(
-                            f"{BACKEND_URL}/history/{st.session_state.username}/{actual_index}"
+                            f"{BACKEND_URL}/history/{st.session_state.username}/{item['id']}"
                         )
                         if resp.status_code == 200:
                             st.success("Deleted from DB ✅")
-                            st.session_state.qa_history.pop(actual_index)
+                            st.session_state.qa_history = [
+                                entry for entry in st.session_state.qa_history if entry[0] != item["id"]
+                            ]
                         else:
                             st.error("❌ Failed to delete from DB")
                     except Exception as e:
@@ -215,10 +224,13 @@ if uploaded_files:
             upload_resp = requests.post(f"{BACKEND_URL}/upload", files=pdf_payload, data=data)
             if upload_resp.status_code == 200:
                 st.success("✅ PDFs uploaded successfully!")
-                # 🔄 Refresh history immediately
                 h = requests.get(f"{BACKEND_URL}/history/{st.session_state.username}")
                 if h.status_code == 200:
-                    st.session_state.qa_history = [(q["question"], q["answer"], q.get("matched_paragraphs", [])) for q in h.json()]
+                    history = h.json()
+                    st.session_state.qa_history = [
+                        (q["_id"], q["question"], q["answer"], q.get("matched_paragraphs", []))
+                        for q in history
+                    ]
                 st.rerun()
             else:
                 st.error("❌ Upload failed.")
@@ -239,7 +251,8 @@ with st.form("chat_form", clear_on_submit=True):
                     result = r.json()
                     answer = result.get("answer", "No answer found.")
                     refs = result.get("matched_paragraphs", [])
-                    st.session_state.qa_history.append((question, answer, refs))
+                    chat_id = result.get("_id")  # backend should return inserted id
+                    st.session_state.qa_history.append((chat_id, question, answer, refs))
                     st.session_state.selected_response = (question, answer, refs)
                     st.rerun()
                 elif r.status_code == 404:
@@ -292,3 +305,4 @@ if show_gemini_chat:
 
 # === Footer ===
 st.markdown("<div class='footer'>✨ Developed with ❤️ for Students | Powered by Streamlit</div>", unsafe_allow_html=True)
+
