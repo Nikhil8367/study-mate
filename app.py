@@ -216,14 +216,18 @@ st.markdown("<div class='subheading'>Ask questions directly from your uploaded P
 st.markdown("### 📂 Upload PDF files")
 uploaded_files = st.file_uploader("Drag and drop files here", type=["pdf"], accept_multiple_files=True)
 
-if uploaded_files:
+if uploaded_files and "uploaded" not in st.session_state:
     with st.spinner("📤 Uploading PDFs..."):
         try:
             pdf_payload = [("files", (f.name, f, "application/pdf")) for f in uploaded_files]
             data = {"username": st.session_state.username}
             upload_resp = requests.post(f"{BACKEND_URL}/upload", files=pdf_payload, data=data)
+
             if upload_resp.status_code == 200:
                 st.success("✅ PDFs uploaded successfully!")
+                st.session_state.uploaded = True  # prevent repeat uploads
+
+                # refresh history only once
                 h = requests.get(f"{BACKEND_URL}/history/{st.session_state.username}")
                 if h.status_code == 200:
                     history = h.json()
@@ -231,11 +235,11 @@ if uploaded_files:
                         (q["_id"], q["question"], q["answer"], q.get("matched_paragraphs", []))
                         for q in history
                     ]
-                st.rerun()
             else:
                 st.error("❌ Upload failed.")
         except Exception as e:
             st.error(f"🔌 Upload error: {e}")
+
 
 # === Ask a Question ===
 st.markdown("### 💬 Ask a Question")
@@ -305,3 +309,4 @@ if show_gemini_chat:
 
 # === Footer ===
 st.markdown("<div class='footer'>✨ Developed with ❤️ for Students | Powered by Streamlit</div>", unsafe_allow_html=True)
+
