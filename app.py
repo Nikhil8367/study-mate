@@ -1,313 +1,288 @@
 import streamlit as st
-import requests
+import os
+import fitz
+import time
+from pymongo import MongoClient
+import google.generativeai as genai
+from werkzeug.security import generate_password_hash, check_password_hash
+from dotenv import load_dotenv
+from bson.objectid import ObjectId
 
-# === Configuration ===
-BACKEND_URL = "https://study-mate-back-1.onrender.com"
+# =========================
+# LOAD ENV
+# =========================
+load_dotenv()
+
+# =========================
+# CONFIG
+# =========================
 st.set_page_config(page_title="StudyMate", layout="wide", initial_sidebar_state="collapsed")
 
-# === Session State Initialization ===
+# =========================
+# MongoDB Setup
+# =========================
+client = MongoClient(os.getenv("MONGO_URI"))
+db = client["pdf_db"]
+users_col = db["users"]
+paragraphs_col = db["paragraphs"]
+chats_col = db["chats"]
+gemini_col = db["gemini_chats"]
+
+# =========================
+# Gemini Setup
+# =========================
+genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+model = genai.GenerativeModel("gemini-2.5-flash")
+
+# =========================
+# Session State
+# =========================
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 if "username" not in st.session_state:
     st.session_state.username = ""
 if "qa_history" not in st.session_state:
     st.session_state.qa_history = []
-if "selected_response" not in st.session_state:
-    st.session_state.selected_response = None
 if "gemini_history" not in st.session_state:
     st.session_state.gemini_history = []
+if "selected_response" not in st.session_state:
+    st.session_state.selected_response = None
 
-# === Styling ===
+# =========================
+# FUNCTIONS
+# =========================
+
+def extract_paragraphs_from_pdf(file_bytes):
+    doc = fitz.open(stream=file_bytes, filetype="pdf")
+    paragraphs = []
+    for page in doc:
+        text = page.get_text()
+        paras = [p.strip() for p in text.split('\n\n') if p.strip()]
+        paragraphs.extend(paras)
+    return paragraphs
+
+
+def signup_user(username, password):
+    if users_col.find_one({"username": username}):
+        return False, "User already exists"
+
+    users_col.insert_one({
+        "username": username,
+        "password": generate_password_hash(password)
+    })
+
+    return True, None
+
+
+def login_user(username, password):
+    user = users_col.find_one({"username": username})
+    if user and check_password_hash(user["password"], password):
+        load_history(username)
+        return True, None
+    return False, "Invalid credentials"
+
+
+def load_history(username):
+    pdf_chats = list(chats_col.find({"username": username}).sort("timestamp", -1))
+    gemini_chats = list(gemini_col.find({"username": username}).sort("timestamp", -1))
+
+    st.session_state.qa_history = [
+        (str(c["_id"]), c["question"], c["answer"], c.get("matched_paragraphs", []))
+        for c in pdf_chats
+    ]
+
+    st.session_state.gemini_history = [
+        (str(c["_id"]), c["question"], c["answer"])
+        for c in gemini_chats
+    ]
+
+
+def upload_pdfs(files, username):
+    paragraphs_col.delete_many({"username": username})
+
+    for file in files:
+        paragraphs = extract_paragraphs_from_pdf(file.read())
+        for i, para in enumerate(paragraphs):
+            paragraphs_col.insert_one({
+                "username": username,
+                "index": i,
+                "text": para
+            })
+
+
+def ask_pdf(question, username):
+    user_paras = list(paragraphs_col.find({"username": username}))
+    if not user_paras:
+        return None, []
+
+    all_paragraphs = [doc["text"] for doc in user_paras]
+
+    keywords = question.lower().split()
+    scored = []
+
+    for para in all_paragraphs:
+        score = sum(word in para.lower() for word in keywords)
+        if score > 0:
+            scored.append((para, score))
+
+    scored.sort(key=lambda x: x[1], reverse=True)
+    top_paragraphs = [p[0] for p in scored[:3]] if scored else all_paragraphs[:3]
+
+    context = "\n\n".join(top_paragraphs)
+
+    prompt = f"""
+Answer using only context.
+
+Context:
+{context}
+
+Question: {question}
+"""
+
+    response = model.generate_content(prompt)
+    answer = response.text
+
+    result = chats_col.insert_one({
+        "username": username,
+        "question": question,
+        "answer": answer,
+        "matched_paragraphs": top_paragraphs,
+        "timestamp": time.time()
+    })
+
+    return str(result.inserted_id), answer, top_paragraphs
+
+
+def ask_gemini(message, username):
+    response = model.generate_content(message)
+    reply = response.text
+
+    result = gemini_col.insert_one({
+        "username": username,
+        "question": message,
+        "answer": reply,
+        "timestamp": time.time()
+    })
+
+    return str(result.inserted_id), reply
+
+
+def delete_chat(chat_id):
+    chats_col.delete_one({"_id": ObjectId(chat_id)})
+    gemini_col.delete_one({"_id": ObjectId(chat_id)})
+
+# =========================
+# UI Styling
+# =========================
+
 st.markdown("""
 <style>
-html, body, .main {
-    background: linear-gradient(to right, #e0eafc, #cfdef3);
-    font-family: 'Segoe UI', sans-serif;
-}
-.header-title {
-    text-align: center;
-    font-size: 36px;
-    font-weight: bold;
-    margin-top: 20px;
-    color: white;
-}
-.subheading {
-    text-align: center;
-    font-size: 18px;
-    margin-bottom: 30px;
-    color: #34495e;
-}
-.section {
-    max-width: 850px;
-    margin: auto;
-    background: rgba(255, 255, 255, 0.65);
-    backdrop-filter: blur(14px);
-    border-radius: 20px;
-    padding: 30px;
-    box-shadow: 0 10px 40px rgba(0,0,0,0.05);
-}
 .chat-bubble {
-    padding: 15px 20px;
-    border-radius: 20px;
-    margin-bottom: 15px;
-    max-width: 85%;
-    word-wrap: break-word;
-    font-size: 16px;
+    color: black;
+    padding:15px;
+    border-radius:15px;
+    margin-bottom:10px;
 }
 .user-bubble {
-    color:black;
-    background-color: #d1f0e1;
-    align-self: flex-end;
-    margin-left: auto;
+    background:#d1f0e1;
 }
 .bot-bubble {
-    color:black;
-    background-color: #ffffff;
-    border: 1px solid #ddd;
-    align-self: flex-start;
-    margin-right: auto;
+    background:white;
 }
-.reference {
-    color:black;
-    background-color: #fef9e7;
-    padding: 10px 15px;
-    border-radius: 10px;
-    font-size: 15px;
-    margin-top: 8px;
-    border-left: 4px solid #f4c430;
-}
-.sidebar-question {
-    cursor: pointer;
-    padding: 8px 12px;
-    border-radius: 10px;
-    margin: 5px 0;
-    background-color: #f0f8ff;
-}
-.sidebar-question:hover {
-    background-color: #d6eaff;
-}
-.footer {
-    text-align: center;
-    margin-top: 100px;
-    color: #666;
-    font-size: 14px;
-}
-footer { visibility: hidden; }
 </style>
 """, unsafe_allow_html=True)
 
-# === Authentication Functions ===
-def login_user(username, password):
-    with st.spinner("🔐 Logging in..."):
-        res = requests.post(f"{BACKEND_URL}/login", json={"username": username, "password": password})
-        if res.status_code == 200:
-            h = requests.get(f"{BACKEND_URL}/history/{username}")
-            if h.status_code == 200:
-                history = h.json()
-                st.session_state.qa_history = [
-                    (q["_id"], q["question"], q["answer"], q.get("matched_paragraphs", []))
-                    for q in history
-                ]
-            return True, None
-        return False, res.json().get("error")
+# =========================
+# LOGIN
+# =========================
 
-def signup_user(username, password):
-    with st.spinner("📝 Creating account..."):
-        res = requests.post(f"{BACKEND_URL}/signup", json={"username": username, "password": password})
-        return res.status_code == 200, res.json().get("error")
-
-# === Login / Signup ===
 if not st.session_state.logged_in:
-    st.markdown("## 🔐 Login / Signup")
-    auth_mode = st.radio("Choose", ["Login", "Signup"], horizontal=True)
+    st.title("🔐 StudyMate Login")
+
+    mode = st.radio("Choose", ["Login", "Signup"], horizontal=True)
+
     uname = st.text_input("Username")
     pwd = st.text_input("Password", type="password")
-    btn = st.button("Continue")
 
-    if btn:
-        if not uname or not pwd:
-            st.warning("Please enter username and password.")
+    if st.button("Continue"):
+        if mode == "Login":
+            success, err = login_user(uname, pwd)
         else:
-            if auth_mode == "Login":
-                success, err = login_user(uname, pwd)
-            else:
-                success, err = signup_user(uname, pwd)
+            success, err = signup_user(uname, pwd)
 
-            if success:
-                st.session_state.logged_in = True
-                st.session_state.username = uname
-                st.success(f"Welcome, {uname}!")
-                st.rerun()
-            else:
-                st.error(err or "Authentication failed.")
+        if success:
+            st.session_state.logged_in = True
+            st.session_state.username = uname
+            st.rerun()
+        else:
+            st.error(err)
+
     st.stop()
 
-# === Sidebar ===
-with st.sidebar:
-    st.markdown(f"<h4>👤 {st.session_state.username}</h4>", unsafe_allow_html=True)
+# =========================
+# SIDEBAR
+# =========================
 
-    if st.button("🚪 Logout"):
+with st.sidebar:
+    st.write("👤", st.session_state.username)
+
+    if st.button("Logout"):
         st.session_state.logged_in = False
-        st.session_state.username = ""
-        st.session_state.qa_history = []
-        st.session_state.gemini_history = []
-        st.session_state.selected_response = None
         st.rerun()
 
-    st.markdown("<hr>", unsafe_allow_html=True)
-    st.markdown("### 💬 Chat History", unsafe_allow_html=True)
+# =========================
+# PDF Upload
+# =========================
 
-    has_any_history = st.session_state.qa_history or st.session_state.get("gemini_history")
+st.title("🎓 StudyMate")
 
-    if has_any_history:
-        combined_history = []
+uploaded = st.file_uploader("Upload PDFs", type=["pdf"], accept_multiple_files=True)
 
-        for idx, g in enumerate(reversed(st.session_state.get("gemini_history", []))):
-            question, answer = g
-            combined_history.append({"type": "gemini", "question": question, "answer": answer, "index": idx})
+if uploaded:
+    if st.button("Upload"):
+        upload_pdfs(uploaded, st.session_state.username)
+        st.success("Uploaded successfully ✅")
 
-        for idx, (chat_id, q, a, refs) in enumerate(reversed(st.session_state.qa_history)):
-            combined_history.append({
-                "type": "pdf",
-                "id": chat_id,
-                "question": q,
-                "answer": a,
-                "refs": refs,
-                "index": idx
-            })
+# =========================
+# Ask PDF
+# =========================
 
-        for i, item in enumerate(combined_history):
-            cols = st.columns([8, 1])
-            label = f"🧠 {item['question']}" if item["type"] == "gemini" else f"📄 {item['question']}"
+question = st.text_input("Ask from PDF")
 
-            if cols[0].button(label, key=f"hist_btn_{i}"):
-                if item["type"] == "gemini":
-                    st.session_state.selected_response = (item["question"], item["answer"], None)
-                else:
-                    st.session_state.selected_response = (item["question"], item["answer"], item["refs"])
-                st.rerun()
+if st.button("Ask PDF"):
+    chat_id, answer, refs = ask_pdf(question, st.session_state.username)
 
-            if cols[1].button("🗑️", key=f"del_btn_{i}"):
-                if item["type"] == "gemini":
-                    del st.session_state.gemini_history[-(item["index"]+1)]
-                else:
-                    try:
-                        resp = requests.delete(
-                            f"{BACKEND_URL}/history/{st.session_state.username}/{item['id']}"
-                        )
-                        if resp.status_code == 200:
-                            st.success("Deleted from DB ✅")
-                            st.session_state.qa_history = [
-                                entry for entry in st.session_state.qa_history if entry[0] != item["id"]
-                            ]
-                        else:
-                            st.error("❌ Failed to delete from DB")
-                    except Exception as e:
-                        st.error(f"Backend error: {e}")
-                st.rerun()
-    else:
-        st.info("No chats yet. Start by asking a question.")
+    st.session_state.qa_history.append((chat_id, question, answer, refs))
+    st.session_state.selected_response = (question, answer, refs)
 
-# === Header ===
-st.markdown("<div class='header-title'>🎓 StudyMate: Smart Study Assistant</div>", unsafe_allow_html=True)
-st.markdown("<div class='subheading'>Ask questions directly from your uploaded PDF notes!</div>", unsafe_allow_html=True)
+# =========================
+# Gemini Chat
+# =========================
 
-# === Upload PDFs ===
-st.markdown("### 📂 Upload PDF files")
-uploaded_files = st.file_uploader("Drag and drop files here", type=["pdf"], accept_multiple_files=True)
+gemini_q = st.text_input("Ask Gemini")
 
-if uploaded_files and "uploaded" not in st.session_state:
-    with st.spinner("📤 Uploading PDFs..."):
-        try:
-            pdf_payload = [("files", (f.name, f, "application/pdf")) for f in uploaded_files]
-            data = {"username": st.session_state.username}
-            upload_resp = requests.post(f"{BACKEND_URL}/upload", files=pdf_payload, data=data)
+if st.button("Ask Gemini"):
+    gid, reply = ask_gemini(gemini_q, st.session_state.username)
 
-            if upload_resp.status_code == 200:
-                st.success("✅ PDFs uploaded successfully!")
-                st.session_state.uploaded = True  # prevent repeat uploads
+    st.session_state.gemini_history.append((gid, gemini_q, reply))
 
-                # refresh history only once
-                h = requests.get(f"{BACKEND_URL}/history/{st.session_state.username}")
-                if h.status_code == 200:
-                    history = h.json()
-                    st.session_state.qa_history = [
-                        (q["_id"], q["question"], q["answer"], q.get("matched_paragraphs", []))
-                        for q in history
-                    ]
-            else:
-                st.error("❌ Upload failed.")
-        except Exception as e:
-            st.error(f"🔌 Upload error: {e}")
+# =========================
+# Show PDF Response
+# =========================
 
-
-# === Ask a Question ===
-st.markdown("### 💬 Ask a Question")
-with st.form("chat_form", clear_on_submit=True):
-    question = st.text_input("Type your question", placeholder="What is photosynthesis?")
-    submit = st.form_submit_button("Ask")
-
-    if submit and question.strip():
-        with st.spinner("🤖 Thinking..."):
-            try:
-                r = requests.post(f"{BACKEND_URL}/ask", json={"question": question, "username": st.session_state.username})
-                if r.status_code == 200:
-                    result = r.json()
-                    answer = result.get("answer", "No answer found.")
-                    refs = result.get("matched_paragraphs", [])
-                    chat_id = result.get("_id")  # backend should return inserted id
-                    st.session_state.qa_history.append((chat_id, question, answer, refs))
-                    st.session_state.selected_response = (question, answer, refs)
-                    st.rerun()
-                elif r.status_code == 404:
-                    st.warning("📭 No answer found. Upload PDFs first.")
-                else:
-                    st.error("❌ Backend error.")
-            except Exception as e:
-                st.error(f"Request failed: {e}")
-
-# === Display Selected Chat ===
 if st.session_state.selected_response:
     q, a, refs = st.session_state.selected_response
-    st.markdown(f"<div class='chat-bubble user-bubble'><b>You:</b> {q}</div>", unsafe_allow_html=True)
-    st.markdown(f"<div class='chat-bubble bot-bubble'><b>StudyMate:</b> {a}</div>", unsafe_allow_html=True)
 
-    fallback_phrases = ["no answer found", "does not provide", "unable to answer", "couldn’t find", "sorry"]
-    if a and refs and all(p not in a.lower() for p in fallback_phrases):
-        for ref in refs:
-            st.markdown(f"<div class='reference'>• {ref}</div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='chat-bubble user-bubble'>{q}</div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='chat-bubble bot-bubble'>{a}</div>", unsafe_allow_html=True)
 
-# === Gemini Chatbot Interface ===
-st.markdown("<hr>", unsafe_allow_html=True)
-show_gemini_chat = st.toggle("💬 Ask Chatbot Instead", key="gemini_toggle")
+    for r in refs:
+        st.info(r)
 
-if show_gemini_chat:
-    st.markdown("### 🤖 Gemini Chat Assistant")
+# =========================
+# Gemini History
+# =========================
 
-    with st.form("gemini_chat", clear_on_submit=True):
-        user_input = st.text_input("Ask anything...", placeholder="What's the capital of France?")
-        submit_gemini = st.form_submit_button("Send")
-
-    if submit_gemini and user_input.strip():
-        with st.spinner("🧠 Gemini is thinking..."):
-            try:
-                gemini_res = requests.post(
-                    f"{BACKEND_URL}/gemini_chat",
-                    json={"message": user_input, "username": st.session_state.username}
-                )
-                if gemini_res.status_code == 200:
-                    reply = gemini_res.json().get("response", "No response.")
-                    st.session_state.gemini_history.append((user_input, reply))
-                else:
-                    st.session_state.gemini_history.append((user_input, "Error from Gemini API."))
-            except Exception as e:
-                st.session_state.gemini_history.append((user_input, f"Error: {e}"))
-
-    for u, r in reversed(st.session_state.gemini_history):
-        st.markdown(f"<div class='chat-bubble user-bubble'><b>You:</b> {u}</div>", unsafe_allow_html=True)
-        st.markdown(f"<div class='chat-bubble bot-bubble'><b>Gemini:</b> {r}</div>", unsafe_allow_html=True)
-
-# === Footer ===
-st.markdown("<div class='footer'>✨ Developed with ❤️ for Students | Powered by Streamlit</div>", unsafe_allow_html=True)
-
-
+for gid, q, a in reversed(st.session_state.gemini_history):
+    st.markdown(f"<div class='chat-bubble user-bubble'>{q}</div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='chat-bubble bot-bubble'>{a}</div>", unsafe_allow_html=True)
