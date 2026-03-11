@@ -1,0 +1,6 @@
+streamlit
+pymupdf
+pymongo
+google-generativeai
+werkzeug
+python-dotenv
